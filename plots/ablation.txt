@@ -1,0 +1,47 @@
+Ablation Study Results
+
+Parameters:
+Window Size (original) = 17
+
+--------------------------------------------------
+
+Electricity Dataset:
+
+Window Size = 8
+- Higher error due to limited past context
+- Model cannot capture long-term dependencies properly
+
+Window Size = 17 (Original)
+- Best performance among tested values
+- Provides a balance between context and learning
+
+Window Size = 34
+- Slight increase in error
+- Model struggles with longer sequences and added noise
+
+--------------------------------------------------
+
+Stock Dataset:
+
+Window Size = 8
+- Lower context leads to slightly worse predictions
+- Short-term trends captured but lacks stability
+
+Window Size = 17 (Original)
+- Best performance
+- Captures sufficient temporal information
+
+Window Size = 34
+- Slight degradation in performance
+- Larger window introduces unnecessary variability
+
+--------------------------------------------------
+
+Final Observation:
+
+- Moderate window size (17) gives best results across both datasets
+- Small window → underfitting (insufficient context)
+- Large window → harder optimization and noise
+
+Conclusion:
+Choosing an appropriate window size is critical for time-series forecasting performance.
