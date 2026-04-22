@@ -1,52 +1,166 @@
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_absolute_error
+import os
+
+from models import MLP, CustomGRU
+from utils import create_windows
 
 # ================================
-# MLP BASELINE MODEL
+# PARAMETERS (ROLL NO BASED)
 # ================================
-class MLP(nn.Module):
-    def __init__(self, input_size, horizon):
-        super().__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(input_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, horizon)
-        )
+window_size = 17
+prediction_horizon = 2
+hidden_size = 14
 
-    def forward(self, x):
-        # WHY: MLP cannot understand sequence order, so we flatten input
-        x = x.view(x.size(0), -1)
-        return self.fc(x)
-
+print("Window Size:", window_size)
+print("Horizon:", prediction_horizon)
+print("Hidden Size:", hidden_size)
 
 # ================================
-# CUSTOM GRU MODEL (FROM SCRATCH)
+# AUTO LOAD DATASET (KAGGLE SAFE)
 # ================================
-class CustomGRU(nn.Module):
-    def __init__(self, input_size, hidden_size, horizon):
-        super().__init__()
-        self.hidden_size = hidden_size
+file_path = None
 
-        self.z = nn.Linear(input_size + hidden_size, hidden_size)  # update gate
-        self.r = nn.Linear(input_size + hidden_size, hidden_size)  # reset gate
-        self.h_hat = nn.Linear(input_size + hidden_size, hidden_size)
+for dirname, _, filenames in os.walk('/kaggle/input'):
+    for filename in filenames:
+        if filename.endswith('.csv') or filename.endswith('.txt'):
+            file_path = os.path.join(dirname, filename)
 
-        self.fc = nn.Linear(hidden_size, horizon)
+print("Using dataset:", file_path)
 
-    def forward(self, x):
-        # WHY: hidden state stores memory of past sequence
-        h = torch.zeros(x.size(0), self.hidden_size)
+# Load dataset
+if file_path.endswith('.txt'):
+    df = pd.read_csv(file_path, sep=';', low_memory=False)
+else:
+    df = pd.read_csv(file_path)
 
-        for t in range(x.size(1)):
-            combined = torch.cat((x[:, t], h), dim=1)
+# Select column
+data = df.iloc[:, 1].dropna().values
 
-            z = torch.sigmoid(self.z(combined))  # update gate
-            r = torch.sigmoid(self.r(combined))  # reset gate
+# Normalize
+data = (data - data.mean()) / data.std()
 
-            combined_r = torch.cat((x[:, t], r * h), dim=1)
-            h_tilde = torch.tanh(self.h_hat(combined_r))
+# ================================
+# WINDOWING
+# ================================
+X, y = create_windows(data, window_size, prediction_horizon)
 
-            # WHY: selectively update memory
-            h = (1 - z) * h + z * h_tilde
+X = torch.tensor(X, dtype=torch.float32).unsqueeze(-1)
+y = torch.tensor(y, dtype=torch.float32)
 
-        return self.fc(h)
+# ================================
+# TRAIN TEST SPLIT
+# ================================
+split = int(0.8 * len(X))
+
+X_train, X_test = X[:split], X[split:]
+y_train, y_test = y[:split], y[split:]
+
+# ================================
+# MODELS
+# ================================
+mlp = MLP(window_size, prediction_horizon)
+gru = CustomGRU(1, hidden_size, prediction_horizon)
+
+# ================================
+# TRAIN FUNCTION
+# ================================
+def train(model, X, y, epochs=50):
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    loss_fn = nn.MSELoss()
+
+    losses = []
+
+    for epoch in range(epochs):
+        optimizer.zero_grad()
+
+        output = model(X)
+
+        # WHY: regression problem → MSE
+        loss = loss_fn(output, y)
+
+        loss.backward()
+        optimizer.step()
+
+        losses.append(loss.item())
+
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+
+    return losses, model
+
+# ================================
+# TRAIN MODELS
+# ================================
+mlp_losses, mlp = train(mlp, X_train, y_train)
+gru_losses, gru = train(gru, X_train, y_train)
+
+# ================================
+# PLOT LOSS
+# ================================
+plt.figure()
+plt.plot(mlp_losses, label="MLP")
+plt.plot(gru_losses, label="GRU")
+plt.legend()
+plt.title("Training Loss")
+plt.savefig("results/loss.png")
+plt.show()
+
+# ================================
+# PREDICTIONS
+# ================================
+pred = gru(X_test).detach().numpy()
+actual = y_test.numpy()
+
+# ================================
+# PLOT PREDICTION
+# ================================
+plt.figure()
+plt.plot(actual[:100, 0], label="Actual")
+plt.plot(pred[:100, 0], label="Predicted")
+plt.legend()
+plt.title("Prediction vs Actual")
+plt.savefig("results/prediction.png")
+plt.show()
+
+# ================================
+# METRICS
+# ================================
+mse = ((pred - actual)**2).mean()
+mae = mean_absolute_error(actual, pred)
+rmse = np.sqrt(mse)
+
+print("\n===== RESULTS =====")
+print("MSE:", mse)
+print("MAE:", mae)
+print("RMSE:", rmse)
+
+# ================================
+# ABLATION STUDY
+# ================================
+with open("results/ablation.txt", "w") as f:
+    for ws in [8, 17, 34]:
+        X_ab, y_ab = create_windows(data, ws, prediction_horizon)
+
+        X_ab = torch.tensor(X_ab, dtype=torch.float32).unsqueeze(-1)
+        y_ab = torch.tensor(y_ab, dtype=torch.float32)
+
+        split = int(0.8 * len(X_ab))
+        X_tr, X_te = X_ab[:split], X_ab[split:]
+        y_tr, y_te = y_ab[:split], y_ab[split:]
+
+        model = CustomGRU(1, hidden_size, prediction_horizon)
+        _, model = train(model, X_tr, y_tr, epochs=20)
+
+        pred_ab = model(X_te).detach().numpy()
+        actual_ab = y_te.numpy()
+
+        mse_ab = ((pred_ab - actual_ab)**2).mean()
+
+        result = f"Window Size = {ws}, MSE = {mse_ab}\n"
+        print(result)
+        f.write(result)
